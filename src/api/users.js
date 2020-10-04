@@ -19,7 +19,7 @@ router.get("/:id/progress", async function (req, res, next) {
             "pullrequest.created_at"
           )
           .select("sponsor.name as sponsor_name")
-          .select("repository.name as repository_name")
+          .select("repository.url as repository_name")
           .where({ participant_id: id, valid: true })
           .leftJoin("pullrequest", "contribution.pr_id", "pullrequest.id")
           .leftJoin("repository", "contribution.repo_id", "repository.id")
@@ -28,7 +28,7 @@ router.get("/:id/progress", async function (req, res, next) {
           .as("t")
       )
       .distinctOn("repo_id");
-    console.log(contributions);
+
     return res.json({ unique: contributions.length, prs: contributions });
   } catch (error) {
     console.log(error);
