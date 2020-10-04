@@ -19,7 +19,11 @@ async function getData() {
     .table("pullrequest")
     .select("id", "github_id", "repository_id");
 
-  const contributions = await knex("contribution").select("pr_id");
+  const contributions = await knex("contribution").select(
+    "pr_id",
+    "participant_id",
+    "valid"
+  );
 
   return { repos, participants, prs, contributions };
 }
@@ -38,12 +42,21 @@ async function savePR(pullRequest, repo) {
   return res;
 }
 
-async function saveContribution(pullRequestID, participant, repo) {
+async function setContributionValidity(contribution, valid) {
+  return await knex("contribution")
+    .where({
+      pr_id: contribution.pr_id,
+      participant_id: contribution.participant_id,
+    })
+    .update({ valid });
+}
+
+async function saveContribution(pullRequestID, valid, participant, repo) {
   return await knex("contribution").insert({
     pr_id: pullRequestID,
     participant_id: participant.id,
     repo_id: repo.id,
-    valid: true,
+    valid,
   });
 }
 
@@ -87,7 +100,7 @@ async function run() {
             }
           } catch (error) {
             log(`Failed to save PR ${pullRequest.number}: ${error}`);
-            break;
+            continue;
           }
         }
 
@@ -96,14 +109,24 @@ async function run() {
           (p) => p.github_id === pullRequest.user.id.toString()
         );
 
+        if (!participant) continue;
+
         // Find the contribution in the database
         const existingContribution = contributions.find(
           (c) => c.pr_id === pullRequestID
         );
 
-        if (!existingContribution && participant) {
+        const valid = !pullRequest.labels.some(
+          (label) => label.name === "invalid"
+        );
+
+        if (existingContribution) {
+          if (existingContribution.valid != valid) {
+            await setContributionValidity(existingContribution, valid);
+          }
+        } else {
           try {
-            await saveContribution(pullRequestID, participant, repo);
+            await saveContribution(pullRequestID, valid, participant, repo);
 
             newContributionCount += 1;
           } catch (error) {
