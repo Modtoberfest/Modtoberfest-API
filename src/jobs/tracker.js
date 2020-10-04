@@ -2,95 +2,113 @@ const CronJob = require("cron").CronJob;
 const knex = require("../lib/knex");
 const github = require("../lib/github");
 
+const OCTOBER_FIRST = new Date(Date.UTC(2020, 9, 1, 0, 0, 0));
+
 function log(message) {
   console.log(`[Progress Tracker]: ${message}`);
+}
+
+async function getData() {
+  const repos = await knex.table("repository").select("id", "repository_id");
+
+  const participants = await knex
+    .table("participant")
+    .select("id", "github_id");
+
+  const prs = await knex
+    .table("pullrequest")
+    .select("id", "github_id", "repository_id");
+
+  const contributions = await knex("contribution").select("pr_id");
+
+  return { repos, participants, prs, contributions };
+}
+
+async function savePR(pullRequest, repo) {
+  const res = await knex("pullrequest")
+    .insert({
+      repository_id: repo.id,
+      github_id: pullRequest.id,
+      url: pullRequest.html_url,
+      author_github_id: pullRequest.user.id,
+      created_at: pullRequest.created_at,
+    })
+    .returning("id");
+
+  return res;
+}
+
+async function saveContribution(pullRequestID, participant, repo) {
+  return await knex("contribution").insert({
+    pr_id: pullRequestID,
+    participant_id: participant.id,
+    repo_id: repo.id,
+    valid: true,
+  });
 }
 
 async function run() {
   log("Starting");
 
-  let newPr = 0;
-  let newContributions = 0;
+  let newPRCount = 0;
+  let newContributionCount = 0;
 
   try {
-    const repos = await knex.table("repository").select("id", "repository_id");
-
-    const participants = await knex
-      .table("participant")
-      .select("id", "github_id");
-
-    const prs = await knex
-      .table("pullrequest")
-      .select("id", "github_id", "repository_id");
-
-    const contributions = await knex("contribution").select("pr_id");
+    const { repos, participants, prs, contributions } = await getData();
 
     log(`Processing ${repos.length} repositories`);
 
     for (const repo of repos) {
-      const limit = new Date(Date.UTC(2020, 9, 1, 0, 0, 0));
-
-      const repoPrs = await github.getPullRequests(repo.repository_id);
+      const githubPRs = await github.getPullRequests(repo.repository_id);
 
       // Go down the PRs until we hit the last one or October 1st
-      for (const pr of repoPrs) {
-        const createdAt = new Date(pr.created_at);
+      for (const pullRequest of githubPRs) {
+        const createdAt = new Date(pullRequest.created_at);
 
         // Make sure it's after October 1st
-        if (limit.getTime() > createdAt.getTime()) break;
+        if (OCTOBER_FIRST.getTime() > createdAt.getTime()) break;
 
-        // Check if not already in DB
-        let prId = null;
-        const existingPr = prs.find((p) => p.github_id == pr.id);
-        if (existingPr) {
-          prId = existingPr.id;
+        let pullRequestID = null;
+
+        const existingPR = prs.find((p) => p.github_id == pullRequest.id);
+
+        if (existingPR) {
+          pullRequestID = existingPR.id;
         } else {
           // Save new PR
           try {
-            const res = await knex("pullrequest")
-              .insert({
-                repository_id: repo.id,
-                github_id: pr.id,
-                url: pr.html_url,
-                author_github_id: pr.user.id,
-                created_at: pr.created_at,
-              })
-              .returning("id");
+            const saved = await savePR(pullRequest, repo);
 
-            prId = res[0];
-            newPr += 1;
+            pullRequestID = saved[0];
+            newPRCount += 1;
 
-            if (!prId) {
-              throw new Error("No insertion ID returned from saving PR");
+            if (!pullRequestID) {
+              throw new Error("No insertion ID returned from saving PR.");
             }
           } catch (error) {
-            log(`Failed to save PR ${pr.number}: ${error}`);
+            log(`Failed to save PR ${pullRequest.number}: ${error}`);
             break;
           }
         }
 
         // Try to match it against a participant
         const participant = participants.find(
-          (p) => p.github_id === pr.user.id.toString()
+          (p) => p.github_id === pullRequest.user.id.toString()
         );
 
+        // Find the contribution in the database
         const existingContribution = contributions.find(
-          (c) => c.pr_id === prId
+          (c) => c.pr_id === pullRequestID
         );
 
         if (!existingContribution && participant) {
           try {
-            await knex("contribution").insert({
-              pr_id: prId,
-              participant_id: participant.id,
-              repo_id: repo.id,
-              valid: true,
-            });
+            await saveContribution(pullRequestID, participant, repo);
 
-            newContributions += 1;
+            newContributionCount += 1;
           } catch (error) {
             log(
-              `Failed to save PR ${prId} for ${participant.id} (in ${repo.id}): ${error}`
+              `Failed to save PR ${pullRequestID} for ${participant.id} (in ${repo.id}): ${error}`
             );
             break;
           }
@@ -102,7 +120,7 @@ async function run() {
   }
 
   log(
-    `Task completed; ${newPr} new PRs, ${newContributions} new Contributions.`
+    `Task completed; ${newPRCount} new PRs, ${newContributionCount} new Contributions.`
   );
 }
 
