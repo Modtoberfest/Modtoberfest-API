@@ -7,7 +7,7 @@ function schedule() {
 
   if (process.env.DISABLE_TASK) {
     console.log("[Task Manager] Tasks are disabled, skipping.");
-    require("./tracker").run();
+    // require("./tracker").run();
   } else {
     trackerJob.start();
     console.log("[Task Manager] Tasks scheduled.");
